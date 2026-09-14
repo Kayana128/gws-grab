@@ -58,25 +58,76 @@ dlcsv.onclick=()=>{
     const mm=String(now.getMonth()+1).padStart(2,'0');
     const namaFile='GWS'+dd+mm+'.csv';
 
-    // CSV dibuat DARI FILE XLS/XLSX hasil konversi terlebih dahulu.
-    // Jadi sumber CSV benar-benar sama dengan file GRAB Excel yang sudah selesai diproses,
-    // dan CSV berisi NILAI hasil konversi (bukan formula Excel).
+    /*
+      PENTING:
+      CSV tetap dibuat MELALUI FILE XLS/XLSX hasil konversi.
+      Alurnya:
+      1. out = workbook GRAB hasil proses.
+      2. out ditulis menjadi XLSX.
+      3. XLSX tersebut dibaca kembali sebagai file Excel hasil konversi.
+      4. Sheet GRAB dari file hasil konversi diambil nilainya.
+      5. Nilai tersebut disusun menjadi CSV dengan TEPAT 16 kolom A:P.
+
+      Dengan cara ini CSV tidak bypass proses XLS dan tidak membawa formula.
+    */
     const xlsxBytes=XLSX.write(out,{bookType:'xlsx',type:'array',compression:true});
-    const convertedXls=XLSX.read(xlsxBytes,{type:'array',cellFormula:false,cellStyles:false,cellNF:false,cellDates:true});
+    const convertedXls=XLSX.read(xlsxBytes,{
+      type:'array',
+      cellFormula:false,
+      cellStyles:false,
+      cellNF:false,
+      cellDates:false
+    });
+
     const xlsSheet=convertedXls.Sheets['GRAB'];
     if(!xlsSheet) throw new Error('Sheet GRAB hasil konversi tidak ditemukan.');
 
-    // Konversi sheet GRAB hasil XLS ke CSV.
-    const csvText=XLSX.utils.sheet_to_csv(xlsSheet,{
-      FS:',',
-      RS:'\r\n',
-      blankrows:true,
-      skipHidden:false,
-      strip:false
+    // Paksa range CSV persis A:P (16 kolom), sesuai template Grab.
+    const sr=xlsSheet['!ref'] ? XLSX.utils.decode_range(xlsSheet['!ref']) :
+      {s:{r:0,c:0},e:{r:0,c:15}};
+    const csvRange={
+      s:{r:0,c:0},
+      e:{r:sr.e.r,c:15}
+    };
+
+    // Ambil NILAI dari XLS hasil konversi, bukan formula.
+    const rows=XLSX.utils.sheet_to_json(xlsSheet,{
+      header:1,
+      range:XLSX.utils.encode_range(csvRange),
+      raw:true,
+      defval:'',
+      blankrows:true
     });
 
-    // UTF-8 BOM membantu Excel/Windows membaca CSV tanpa merusak karakter.
-    const blob=new Blob([new Uint8Array([0xEF,0xBB,0xBF]),csvText],{type:'text/csv;charset=utf-8'});
+    // Pastikan setiap baris tepat 16 kolom.
+    const normalizedRows=rows.map(row=>{
+      const r=Array.isArray(row)?row.slice(0,16):[];
+      while(r.length<16) r.push('');
+      return r;
+    });
+
+    // CSV serializer standar: koma sebagai delimiter, CRLF, quote bila diperlukan.
+    const csvEscape=value=>{
+      if(value===null || value===undefined) return '';
+      let v=String(value);
+      // Jangan izinkan formula Excel masuk ke CSV.
+      // Semua data di sini berasal dari nilai hasil XLS, bukan formula.
+      if(v.includes('"') || v.includes(',') || v.includes('\r') || v.includes('\n')){
+        v='"'+v.replace(/"/g,'""')+'"';
+      }
+      return v;
+    };
+
+    const csvText=normalizedRows
+      .map(row=>row.map(csvEscape).join(','))
+      .join('\r\n')+'\r\n';
+
+    // BOM UTF-8 seperti file CSV template Grab.
+    const blob=new Blob([
+      new Uint8Array([0xEF,0xBB,0xBF]),
+      csvText
+    ],{type:'text/csv;charset=utf-8'});
+
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
